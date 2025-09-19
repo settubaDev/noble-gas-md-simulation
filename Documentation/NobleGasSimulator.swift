@@ -442,7 +442,7 @@ class AtomicMasses {
 // MARK: - Simulation
 
 // A very small MD simulation that will not benefit from cutoffs or modern
-// optimization algorithms. Computational complexity is O(n^2).
+// optimization algorithms. Computational complexity is 𝒪(n^2).
 //
 // Stores the intermediate data in range-reduced single precision for nonbonded
 // force calculations, but expands to double precision (SI units) elsewhere.
@@ -1305,7 +1305,7 @@ if testingSpeed {
     }
     
     // Minimum average distance over all the points. Gathering this metric takes
-    // O(n^2) computations.
+    // 𝒪(n^2) computations.
     var minAverageDistance: Real = .infinity
     var minDistanceSampleID: Int = -1
     var tempPositions: [SIMD3<Real>] = Array(

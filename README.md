@@ -28,47 +28,81 @@ There are numerous software libraries for molecular dynamics, each specializing 
 
 </div>
 
-<i> <b>Figure 2.</b> Simulation speed of various molecular dynamics libraries when the timestep is 4 fs. OpenMM (blue, red) is faster than all other libraries for 10,000 - 1 million atoms. The orange and cyan lines are the Swift code developed for this research paper. The code utilizes SIMD parallelism to achieve $O(n)$ scaling between 1 - 8 atoms, then faces $O(n^2)$ scaling until 70 atoms. Next, it switches to GPU acceleration and becomes $O(1)$ - bottlenecked by latency. At 10,000 atoms, the Swift code becomes slower than OpenMM.</i>
+<i> <b>Figure 2.</b> Simulation speed of various molecular dynamics libraries when the timestep is 4 fs. OpenMM (blue, red) is faster than all other libraries for 10,000 - 1 million atoms. The orange and cyan lines are the Swift code developed for this research paper. The code utilizes SIMD parallelism to achieve 𝒪($n$) scaling between 1 - 8 atoms, then faces 𝒪($n^2$) scaling until 70 atoms. Next, it switches to GPU acceleration and becomes 𝒪($1$) - bottlenecked by latency. At 10,000 atoms, the Swift code becomes slower than OpenMM.</i>
 
 ## Methods
 
 In molecular dynamics, each atom exerts a force on other atoms. Over time, that force causes atoms to move. To simulate this on a computer, one can use Euler's method. Each particle has a velocity, and it moves according to that velocity for a short time interval. After the time interval is finished, the velocity is recalculated. Euler's method is a type of numerical integrator, which finds how a system evolves over time. However, this integrator does not conserve energy. Small numerical errors compound during each time step, and generally increase the energy (Eqn. 1). Therefore, MD employs symplectic integrators, which are designed to conserve energy. My project will use the velocity Verlet integrator (Eqn. 2).
 
-<div align="center">
+---
 
 A system has two particles with equal mass and velocity.
 
-$m_1 = m_2 = m$
+```math
+\begin{align}
+m_1 = m_2 &= m \\
+v_1 = v_2 &= v \\
+E_{correct} &= \frac{1}{2}m_1v_1^2 + \frac{1}{2}m_2v_2^2 \\
+  &= \frac{1}{2}mv^2 + \frac{1}{2}mv^2 \\
+  &= mv^2 \\
+E_{approximate} &= \frac{1}{2}m(0.99v)^2 + \frac{1}{2}m(1.01v)^2 \\
+  &= 1.0001mv^2 \\
+\end{align}
+```
 
-$v_1 = v_2 = v$
+----
 
-$E_{correct} = \frac{1}{2}m_1v_1^2 + \frac{1}{2}m_2v_2^2 = \frac{1}{2}mv^2 + \frac{1}{2}mv^2 = mv^2$
+> **Equation 1.** Assuming numerical error in the velocity has a standard deviation of ±0.01, energy systematically trends toward greater values.
 
-$E_{approximate} = \frac{1}{2}m(0.99v)^2 + \frac{1}{2}m(1.01v)^2 = 1.0001mv^2$
+> Note that the velocities themselves are not systematically increasing; the random deviations have a mean of zero. The energy increases slightly each time step, and explodes after many time steps.
 
-</div>
+1) Update positions:
+```math
+\begin{align}
+x_1(t+h) = x(t) + hx_i'(t) + \frac{1}{2}h^2x_i''(t)
+\end{align}
+```
 
-<i> <b>Equation 1.</b> Assuming numerical error in the velocity has a standard deviation of ±0.01, energy systematically trends toward greater values. Note that the velocities themselves are not systematically increasing; the random deviations have a mean of zero. The energy increases slightly each time step, and explodes after many time steps. </i>
+2) Compute forces: 
+```math
+\begin{align}
+(f_1,f_2,...f_n) = F(x_1,x_2,...x_n)
+\end{align}
+```
 
-1) Update positions: <div align="center">  $x_1(t+h) = x(t) + hx_i'(t) + \frac{1}{2}h^2x_i''(t)$ </div>
+3) Update accelerations:
+```math
+\begin{align}
+x_i''(t+h) = f_i / m
+\end{align}
+```
 
-2) Compute forces: <div align="center"> $(f_1,f_2,...f_n) = F(x_1,x_2,...x_n)$ </div>
+4) Update velocities:
 
-3) Update accelerations: <div align="center"> $x_i''(t+h) = f_i / m$ </div>
+```math
+\begin{align}
+x_i'(t+h) = x_i'(t) + \frac{1}{2}h(x_i''(t) + x_i''(t_h))
+\end{align}
+```
+---
 
-4) Update velocities: <div align="center"> $x_i'(t+h) = x_i'(t) + \frac{1}{2}h(x_i''(t) + x_i''(t_h))$ </div>
-
-<i> <b>Equation 2.</b> The velocity Verlet integrator. $F$ represents the forcefield, which determines forces as a function of atom positions. $x_i$ is the position vector of a single particle with index $i$. Newton's second law transforms the forces into accelerations, which are second derivatives of position. </i>
+> **Equation 2**. The velocity Verlet Integrator.
+>
+> $F$ represents the forcefield, which determines forces as a function of atom positions.
+> 
+> $x_i$ is the position vector of a single particle with index $i$. 
+> 
+> Newton's second law transforms the forces into accelerations, which are second derivatives of position.
 
 Potential energy surfaces are multivariable functions that map atom positions (the domain) to potential energy (the range). Systems tend to migrate toward places of lower potential energy (local minima), the lowest of which is the equilibrium. A system migrates faster when the potential energy slope is steeper. In other words, the forces on atoms are proportional to the potential gradient (Eqn. 3). If the kinetic energy is great enough, atoms can occasionally ascend the slope and jump to higher local minima. This is how molecules cross large energy barriers needed for chemical reactions.
 
-Forcefields are algorithms that approximate the true potential energy surface. They follow the Born-Oppenheimer approximation, which assumes that electrons move instantaneously to match the position of nuclei. This approximation breaks down when two energy states become extremely close[^3]. Forcefields calculate "bonded forces" between atoms connected by a covalent bond, which are often very complex math functions. They also calculate "nonbonded forces" between every pair of atoms in the scene, which are summed to create a net force. The latter scales $O(n^2)$ with the number of atoms and dominates compute cost. Smarter algorithms reduce the complexity to $O(n)$, but only apply to systems much larger than I will simulate.
+Forcefields are algorithms that approximate the true potential energy surface. They follow the Born-Oppenheimer approximation, which assumes that electrons move instantaneously to match the position of nuclei. This approximation breaks down when two energy states become extremely close[^3]. Forcefields calculate "bonded forces" between atoms connected by a covalent bond, which are often very complex math functions. They also calculate "nonbonded forces" between every pair of atoms in the scene, which are summed to create a net force. The latter scales 𝒪($n^2$) with the number of atoms and dominates compute cost. Smarter algorithms reduce the complexity to 𝒪($n$), but only apply to systems much larger than I will simulate.
 
-<div align="center">
+```math
 
-$\vec{F}(x,y,z) = -\nabla U = (-\frac{\partial U}{\partial x}, -\frac{\partial U}{\partial y}, -\frac{\partial U}{\partial z})^T$
+\vec{F}(x,y,z) = -\nabla U = (-\frac{\partial U}{\partial x}, -\frac{\partial U}{\partial y}, -\frac{\partial U}{\partial z})^T
+```
 
-</div>
 
 <i> <b>Equation 3.</b> Force is the negative gradient of potential energy ($U$) with respect to position. Atoms follow a path of steepest descent as the system evolves. </i>
 
@@ -132,7 +166,7 @@ $\epsilon_{ij} = \sqrt{\epsilon_{ii} \epsilon_{jj}}$
 
 <i> <b>Figure 5.</b> vdW energies using the Waldman-Hagler rule. </i>
 
-Before running the simulation, one needs to choose the time step. Truncation error of the velocity Verlet integrator scales with $O(h^2)$, so doubling the time step leads to 4x error. However, the end goal is to run an MD simulation as fast as possible. Using larger time steps means the simulation can finish more quickly. A standard practice is setting the time step to $\frac{1}{10}$ the duration of the highest-frequency motions you want to capture[^6]. For example, carbon-hydrogen bonds vibrate with a period of 11 fs, so timesteps are typically ~1.1 fs (femtosecond; 10<sup>-15</sup> seconds). The van der Waals attraction between noble gas atoms has a vibrational period of ~1000 fs, several orders of magnitude higher (Eqn. 6, Fig. 6). I will stick with a conservative 1 fs timestep, but 100 fs could theoretically work as well.
+Before running the simulation, one needs to choose the time step. Truncation error of the velocity Verlet integrator scales with $𝒪(h^2)$, so doubling the time step leads to 4x error. However, the end goal is to run an MD simulation as fast as possible. Using larger time steps means the simulation can finish more quickly. A standard practice is setting the time step to $\frac{1}{10}$ the duration of the highest-frequency motions you want to capture[^6]. For example, carbon-hydrogen bonds vibrate with a period of 11 fs, so timesteps are typically ~1.1 fs (femtosecond; 10<sup>-15</sup> seconds). The van der Waals attraction between noble gas atoms has a vibrational period of ~1000 fs, several orders of magnitude higher (Eqn. 6, Fig. 6). I will stick with a conservative 1 fs timestep, but 100 fs could theoretically work as well.
 
 <div align="center">
 
@@ -158,7 +192,7 @@ $k_{approx} = 2\epsilon(\frac{6}{r_0})^2 = \frac{57.146\epsilon}{\sigma^2}$
 
 In some simulations, the primary goal is to observe how changes in the system affect energy. Molecules can release energy after forming strong bonds, which manifests as heat and can be measured precisely. Very large timesteps introduce a large amount of error, which compounds and eventually breaks conservation of energy. Therefore, energy-conserving simulations use relatively small timesteps, on the order of 0.25 fs.
 
-Not every simulation needs to conserve energy. Those that do not can use a thermostat - an algorithm that simulates dissipation of thermal energy into the system's surroundings. Thermostats conserve temperature instead of conserving energy[^8]. This behavior makes the $O(h^2)$ error in the velocity Verlet integrator less of an issue. Timesteps can theoretically be infinite; you only need small-enough steps to capture the dynamics of interest. Thermostats also allow use of lower-precision numbers to perform calculations, so the simulation can run on graphics hardware rather than the CPU. For example, most MD simulators require Nvidia GPUs because Nvidia has hardware support for 64-bit real numbers. However, OpenMM uses thermostats to run simulations entirely in lower-precision 32-bit numbers. This fact makes OpenMM compatible with alternative GPU vendors such as Apple and Intel[^2].
+Not every simulation needs to conserve energy. Those that do not can use a thermostat - an algorithm that simulates dissipation of thermal energy into the system's surroundings. Thermostats conserve temperature instead of conserving energy[^8]. This behavior makes the $𝒪(h^2)$ error in the velocity Verlet integrator less of an issue. Timesteps can theoretically be infinite; you only need small-enough steps to capture the dynamics of interest. Thermostats also allow use of lower-precision numbers to perform calculations, so the simulation can run on graphics hardware rather than the CPU. For example, most MD simulators require Nvidia GPUs because Nvidia has hardware support for 64-bit real numbers. However, OpenMM uses thermostats to run simulations entirely in lower-precision 32-bit numbers. This fact makes OpenMM compatible with alternative GPU vendors such as Apple and Intel[^2].
 
 ## Results
 
